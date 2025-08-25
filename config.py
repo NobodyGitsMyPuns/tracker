@@ -91,6 +91,11 @@ class Config:
     MOVEMENT_THRESHOLD = int(os.getenv('MOVEMENT_THRESHOLD', '25'))  # Increased for 4K
     MAX_TRACKING_HISTORY = int(os.getenv('MAX_TRACKING_HISTORY', '5'))
     
+    # AI Parallax Correction Settings
+    DRONE_ONLY_MODE = os.getenv('DRONE_ONLY_MODE', 'True').lower() == 'true'
+    MIN_DRONE_CONFIDENCE = float(os.getenv('MIN_DRONE_CONFIDENCE', '0.3'))
+    CROSSHAIR_SMOOTHING = float(os.getenv('CROSSHAIR_SMOOTHING', '0.7'))
+    
     # Drone Classes (objects YOLO might classify drones as)
     DRONE_CLASSES = {'clock', 'bird', 'kite', 'frisbee', 'sports ball', 
                     'donut', 'apple', 'orange', 'cell phone', 'remote'}
