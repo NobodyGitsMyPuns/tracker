@@ -4,18 +4,30 @@
 #include <ArduinoOTA.h>
 #include <WebServer.h>
 #include <Arduino_JSON.h>
-#include "config.h"  // Auto-generated from Python config
 
-// Use config values
-const char *ssid = WIFI_SSID;
-const char *password = WIFI_PASSWORD;
+const char *ssid = "";
+const char *password = "";
 
-// Servo configuration now comes from config.h (auto-generated)
-// PWM, timing, and pin definitions are in config.h
+// Servo pins
+#define PAN_PIN 18
+#define TILT_PIN 19
+#define BLASTER_PIN 21  // Relay control pin
 
-// Home positions from config (can still be changed via web API)
-int pan_home = PAN_HOME;     // From config.h
-int tilt_home = TILT_HOME;   // From config.h
+// PWM settings
+#define PWM_FREQ 50
+#define PWM_RES 16
+
+// Servo timing
+#define SERVO_MIN_US 1000
+#define SERVO_MAX_US 2000
+#define SERVO_CENTER_US 1500
+
+// Servo settings
+#define CENTER_ANGLE 90
+
+// Adjustable home positions (can be changed via web API)
+int PAN_HOME = 40;          // Pan home position - 12 degrees right from center (90 + 12)
+int TILT_HOME = 90;          // Tilt home position (adjustable)
 
 // Movement variables
 int panAngle = CENTER_ANGLE;
@@ -39,9 +51,9 @@ void setup() {
   pinMode(BLASTER_PIN, OUTPUT);
   digitalWrite(BLASTER_PIN, LOW);  // Relay off initially
   
-  // Center servos to configured home positions
-  writeServo(PAN_PIN, pan_home);
-  writeServo(TILT_PIN, tilt_home);
+  // Center servos to home positions
+  writeServo(PAN_PIN, PAN_HOME);
+  writeServo(TILT_PIN, TILT_HOME);
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -203,8 +215,8 @@ void setupWebServer() {
   server.on("/center", HTTP_GET, []() {
     server.sendHeader("Access-Control-Allow-Origin", "*");
     
-    panAngle = pan_home;     // Use configured home position
-    tiltAngle = tilt_home;   // Use configured home position
+    panAngle = PAN_HOME;     // Use adjusted home position instead of CENTER_ANGLE
+    tiltAngle = TILT_HOME;   // Use adjusted home position instead of CENTER_ANGLE
     writeServo(PAN_PIN, panAngle);
     writeServo(TILT_PIN, tiltAngle);
     
