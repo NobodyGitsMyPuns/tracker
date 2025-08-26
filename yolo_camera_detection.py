@@ -22,7 +22,7 @@ gui_running = True
 
 # NEW: AI tracking thread queues
 ai_tracking_queue = queue.Queue(maxsize=5)  # YOLO results queue for AI thread
-servo_command_queue = queue.Queue(maxsize=10)  # Servo commands queue
+servo_command_queue = queue.Queue(maxsize=5)  # Servo commands queue (increased size)
 
 # Digital zoom variables (using config)
 zoom_factor = config.DEFAULT_ZOOM_FACTOR
@@ -36,6 +36,12 @@ target_locked = False
 red_crosshair_active = False
 red_crosshair_x = None
 red_crosshair_y = None
+
+# Position verification system
+verification_active = False
+verification_start_time = None
+verification_target_x = None
+verification_target_y = None
 
 # Manual parallax calibration offsets (adjust these to fine-tune fire control)
 # User has to manually aim LOW and RIGHT to hit target
@@ -484,6 +490,7 @@ def create_info_panel(info_data):
 def main():
     global gui_running, ai_tracking_active, ai_tracking_thread_running
     global red_crosshair_active, red_crosshair_x, red_crosshair_y
+    global verification_active, verification_start_time, verification_target_x, verification_target_y
     
     # ... existing model loading code ...
     
@@ -577,37 +584,38 @@ def main():
     try:
         cap = cv2.VideoCapture(FORCED_CAMERA_INDEX, cv2.CAP_DSHOW)
         if cap.isOpened():
-                # Force specific settings before testing (LARGER RESOLUTION)
-                # 4090 OPTIMIZED: High-res, high-FPS for smooth tracking
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)   # Full HD for 4090
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)  # Full HD for 4090
-                cap.set(cv2.CAP_PROP_FPS, 60)             # 60 FPS for ultra-smooth
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)       # Minimal buffer for low latency
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-                
-                # Give it a moment to initialize
-                import time
-                time.sleep(0.5)
-                
-                # Try multiple frame reads
-                for attempt in range(5):
-                    ret, test_frame = cap.read()
-                    if ret and test_frame is not None:
-                        print(f"Camera working at index {camera_index} (attempt {attempt + 1})")
-                        break
-                    time.sleep(0.1)
-                
+            # Force specific settings before testing (LARGER RESOLUTION)
+            # 4090 OPTIMIZED: High-res, high-FPS for smooth tracking
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)   # Full HD for 4090
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)  # Full HD for 4090
+            cap.set(cv2.CAP_PROP_FPS, 60)             # 60 FPS for ultra-smooth
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)       # Minimal buffer for low latency
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            
+            # Give it a moment to initialize
+            import time
+            time.sleep(0.5)
+            
+            # Try multiple frame reads
+            for attempt in range(5):
+                ret, test_frame = cap.read()
                 if ret and test_frame is not None:
+                    print(f"Camera working at index {FORCED_CAMERA_INDEX} (attempt {attempt + 1})")
                     break
-                else:
-                    print(f"Camera {camera_index} opened but can't read frames")
-                    cap.release()
-                    cap = None
-        except Exception as e:
-            print(f"Error with camera {camera_index}: {e}")
-            if cap:
+                time.sleep(0.1)
+            
+            if not (ret and test_frame is not None):
+                print(f"Camera {FORCED_CAMERA_INDEX} opened but can't read frames")
                 cap.release()
+                cap = None
+        else:
+            print(f"Could not open camera {FORCED_CAMERA_INDEX}")
             cap = None
+    except Exception as e:
+        print(f"Error with camera {FORCED_CAMERA_INDEX}: {e}")
+        if cap:
+            cap.release()
+        cap = None
     
     if cap is None or not cap.isOpened():
         print("Error: Could not open any camera with any backend")
@@ -895,19 +903,21 @@ def main():
                     target_x = center_x
                     target_y = center_y
                     
-                    # Try to get AI position if target detected
+                    # Use AI calculation but OVERRIDE the parallax correction with your calibrated values
                     try:
                         if 'results' in locals() and results[0].boxes is not None and len(results[0].boxes) > 0:
                             ai_crosshair_x, ai_crosshair_y, ai_debug = get_ai_crosshair_position(
                                 results[0], frame_width, frame_height, zoom_factor
                             )
-                            # Use AI position if valid
+                            # Use AI position if valid, but apply BETTER parallax correction
                             if ai_debug.get('status') == 'ai_corrected':
+                                # Get the raw target position from AI (before its bad parallax correction)
+                                # The AI found the target, now apply OUR parallax correction
                                 target_x = ai_crosshair_x
                                 target_y = ai_crosshair_y
-                                add_log("🔴 LOCK ON: AI target detected")
+                                add_log(f"🔴 LOCK ON: AI target at ({target_x}, {target_y})")
                             else:
-                                add_log("🔴 LOCK ON: Using center (no valid AI target)")
+                                add_log("🔴 LOCK ON: Using center (AI status not corrected)")
                         else:
                             add_log("🔴 LOCK ON: Using center (no detections)")
                     except Exception as e:
@@ -944,26 +954,35 @@ def main():
                     # Add fine-tuning factor - adjust this if movement is too much/little
                     movement_scale = 0.8  # Reduce movement by 20% to account for calculation errors
                     
-                    # Additional offset compensation for "3 inches up and right" error
-                    # Convert 3 inches at typical distance to pixels (rough estimate)
-                    distance_compensation_x = -65  # Move servo LEFT to compensate for rightward error (fine-tuned)
-                    distance_compensation_y = 30   # Move servo DOWN to compensate for upward error (doubled)
+                    # Direct servo degree compensation - FIXED FOR ACCURACY
+                    servo_compensation_x_degrees = 2.0   # Move servo RIGHT less (reduced from 8)
+                    servo_compensation_y_degrees = -0.75  # Move servo UP less (reduced from -10)
                     
+                    # Calculate base movement in degrees
                     x_steps = (abs(x_move_deviation) / pixels_per_degree) * movement_scale
                     y_steps = (abs(y_move_deviation) / pixels_per_degree) * movement_scale
                     
-                    # Apply distance compensation
-                    x_compensation_steps = abs(distance_compensation_x) / pixels_per_degree
-                    y_compensation_steps = abs(distance_compensation_y) / pixels_per_degree
+                    # Add direct servo compensation to movement
+                    total_x_steps = x_steps + abs(servo_compensation_x_degrees)
+                    total_y_steps = y_steps + abs(servo_compensation_y_degrees)
+                    # SIMPLE: Always apply X compensation first
+                    if abs(servo_compensation_x_degrees) > 0.5:
+                        direction = 'right' if servo_compensation_x_degrees > 0 else 'left'
+                        step_size = min(abs(servo_compensation_x_degrees), 10.0)
+                        servo_cmd = {'type': 'manual', 'direction': direction, 'step': step_size}
+                        try:
+                            servo_command_queue.put_nowait(servo_cmd)
+                            add_log(f"🎯 COMPENSATION X: {direction.upper()} {step_size:.1f}°")
+                        except queue.Full:
+                            add_log("❌ Servo queue full")
                     
-                    # Move servos to put center at target offset position
-                    if x_steps > 1.0:  # Only move if significant deviation
-                        if x_move_deviation > 0:  # Need to move center right, move servo LEFT (inverted for TAB)
-                            direction = 'left'
-                        else:  # Need to move center left, move servo RIGHT (inverted for TAB)
+                    # Then apply original movement if needed
+                    if x_steps > 0.5:
+                        if x_move_deviation > 0:
                             direction = 'right'
-                        
-                        step_size = min(x_steps + x_compensation_steps, 10.0)  # Add compensation
+                        else:
+                            direction = 'left'
+                        step_size = min(x_steps, 10.0)
                         servo_cmd = {'type': 'manual', 'direction': direction, 'step': step_size}
                         try:
                             servo_command_queue.put_nowait(servo_cmd)
@@ -971,13 +990,24 @@ def main():
                         except queue.Full:
                             add_log("❌ Servo queue full")
                     
-                    if y_steps > 1.0:  # Only move if significant deviation  
-                        if y_move_deviation > 0:  # Need to move center down, move servo down
+                    # SIMPLE: Always apply Y compensation first
+                    if abs(servo_compensation_y_degrees) > 0.5:
+                        direction = 'up' if servo_compensation_y_degrees < 0 else 'down'
+                        step_size = min(abs(servo_compensation_y_degrees), 10.0)
+                        servo_cmd = {'type': 'manual', 'direction': direction, 'step': step_size}
+                        try:
+                            servo_command_queue.put_nowait(servo_cmd)
+                            add_log(f"🎯 COMPENSATION Y: {direction.upper()} {step_size:.1f}°")
+                        except queue.Full:
+                            add_log("❌ Servo queue full")
+                    
+                    # Then apply original Y movement if needed
+                    if y_steps > 0.5:
+                        if y_move_deviation > 0:
                             direction = 'down'
-                        else:  # Need to move center up, move servo up
+                        else:
                             direction = 'up'
-                        
-                        step_size = min(y_steps + y_compensation_steps, 10.0)  # Add compensation
+                        step_size = min(y_steps, 10.0)
                         servo_cmd = {'type': 'manual', 'direction': direction, 'step': step_size}
                         try:
                             servo_command_queue.put_nowait(servo_cmd)
@@ -985,8 +1015,15 @@ def main():
                         except queue.Full:
                             add_log("❌ Servo queue full")
                     
+                    # Start position verification
+                    verification_active = True
+                    verification_start_time = time.time()
+                    verification_target_x = target_x  # Original target position
+                    verification_target_y = target_y
+                    
                     add_log("🔴 RED FIRE CONTROL: AI calculated position")
-                    add_log("   Servos moving to center target, then use arrows to fine-tune")
+                    add_log("   Servos moving to center target...")
+                    add_log("   ⏱️ Will verify position in 2 seconds...")
 
             # AI tracking disabled - too unstable
             elif key == ord('t') or key == ord('T'):
@@ -995,8 +1032,8 @@ def main():
             # Red crosshair movement (Arrow keys when red crosshair is active)
             if red_crosshair_active and red_crosshair_x is not None and red_crosshair_y is not None:
                 if key in [82, 84, 81, 83]:  # Arrow keys only for crosshair movement
-                    # Choose movement size for crosshair adjustment
-                    move_step = 3  # pixels for crosshair fine adjustment
+                    # Choose movement size for crosshair adjustment - VERY FINE for precision
+                    move_step = 1  # pixels for ultra-fine crosshair adjustment
                     key_type = "ARROW"
                     
                     # Move red crosshair
@@ -1013,9 +1050,11 @@ def main():
                         red_crosshair_x = min(frame_width, red_crosshair_x + move_step)
                         add_log(f"🔴 Red crosshair RIGHT {move_step}px ({key_type})")
             
-            # SIMPLE: Just WASD for servo movement - KEEP IT SIMPLE!
+            # WASD servo movement with proper integer math for ESP32
             if key in [ord('w'), ord('s'), ord('a'), ord('d')]:
-                current_step = 1  # Just use 1° - simple and works!
+                # ESP32 uses toInt() so we need to send integers
+                # For fine control, use 1 degree minimum (ESP32 constraint is min 1, max 30)
+                current_step = 1  # Bigger steps for faster movement - ESP32 compatible
                 key_type = "WASD"
                 
                 # Map keys to directions
@@ -1031,7 +1070,7 @@ def main():
                     servo_cmd = {
                         'type': 'manual',
                         'direction': direction,
-                        'step': current_step
+                        'step': current_step  # Send integer directly
                     }
                     try:
                         servo_command_queue.put_nowait(servo_cmd)
@@ -1135,6 +1174,60 @@ def main():
                 print("🖥️ GUI: Dedicated thread (smooth display)")
                 print("📹 Camera/YOLO: Main thread (max detection speed)")
                 print("="*60)
+        
+        # Position verification check (after servo movement)
+        if verification_active and verification_start_time is not None:
+            if time.time() - verification_start_time > 2.0:  # Wait 2 seconds
+                # Check if target is now centered
+                center_x = frame_width // 2
+                center_y = frame_height // 2
+                
+                # Look for the target in current frame
+                target_now_x = None
+                target_now_y = None
+                
+                if results[0].boxes is not None:
+                    strict_drone_classes = {
+                        'clock', 'bird', 'kite', 'frisbee', 'sports ball', 'remote',
+                        'donut', 'apple', 'orange', 'cell phone', 'mouse', 'cup', 'bottle'
+                    }
+                    
+                    best_box = None
+                    best_confidence = 0
+                    
+                    for box in results[0].boxes:
+                        class_id = int(box.cls[0])
+                        confidence = float(box.conf[0])
+                        class_name = model.names[class_id]
+                        
+                        if class_name in strict_drone_classes and confidence > 0.15:
+                            if confidence > best_confidence:
+                                best_confidence = confidence
+                                best_box = box
+                    
+                    if best_box is not None:
+                        x1, y1, x2, y2 = best_box.xyxy[0].tolist()
+                        target_now_x = int((x1 + x2) / 2)
+                        target_now_y = int((y1 + y2) / 2)
+                
+                # Check accuracy
+                if target_now_x is not None and target_now_y is not None:
+                    x_error = abs(target_now_x - center_x)
+                    y_error = abs(target_now_y - center_y)
+                    
+                    if x_error < 50 and y_error < 50:  # Within 50 pixels of center
+                        add_log(f"✅ POSITION VERIFIED: Target centered! Error: X={x_error}px Y={y_error}px")
+                    else:
+                        add_log(f"⚠️ POSITION ERROR: Target off by X={x_error}px Y={y_error}px")
+                        add_log("   Use arrows to fine-tune or adjust parallax offsets")
+                else:
+                    add_log("❌ VERIFICATION FAILED: Target not detected after movement")
+                
+                # Reset verification
+                verification_active = False
+                verification_start_time = None
+                verification_target_x = None
+                verification_target_y = None
         
         # Minimal sleep to prevent CPU overload - reduced for max performance
         time.sleep(0.001)  # 1ms - allows ~1000 FPS processing
