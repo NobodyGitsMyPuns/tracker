@@ -569,11 +569,14 @@ def main():
     
     # ... existing camera initialization code ...
     
-    print("Trying DirectShow backend (skipping broken Media Foundation)...")
-    for camera_index in range(5):
-        try:
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-            if cap.isOpened():
+    # Force specific camera index (change this number to your desired camera)
+    FORCED_CAMERA_INDEX = 0  # Change this to 1, 2, 3, etc. for other cameras
+    
+    print(f"Using forced camera index: {FORCED_CAMERA_INDEX}")
+    cap = None
+    try:
+        cap = cv2.VideoCapture(FORCED_CAMERA_INDEX, cv2.CAP_DSHOW)
+        if cap.isOpened():
                 # Force specific settings before testing (LARGER RESOLUTION)
                 # 4090 OPTIMIZED: High-res, high-FPS for smooth tracking
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)   # Full HD for 4090
@@ -832,6 +835,8 @@ def main():
             # Label
             cv2.putText(annotated_frame, "FIRE CONTROL", (int(red_crosshair_x) - 70, int(red_crosshair_y) - 50), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, bright_red, 3)
+            
+
         
         # Prepare data for info panel
         info_data = {
@@ -875,7 +880,7 @@ def main():
             if key != 255 and key != 0:
                 add_log(f"🔑 Key pressed: {key} (char: '{chr(key) if 32 <= key <= 126 else '?'}')")
             
-            # TAB: Toggle red crosshair - create at AI position or clear
+            # TAB: Toggle red crosshair - create at center position and move servos
             if key == 9:  # TAB key
                 if red_crosshair_active:
                     # Clear red crosshair if it's active
@@ -884,68 +889,105 @@ def main():
                     red_crosshair_y = None
                     add_log("🔴 RED CROSSHAIR CLEARED")
                 else:
-                    # Create red crosshair at AI calculated position
-                    # Debug: Check if we have results and boxes
-                    if 'results' in locals():
-                        add_log(f"🔧 DEBUG: Results exist, boxes: {results[0].boxes is not None}")
-                        if results[0].boxes is not None:
-                            add_log(f"🔧 DEBUG: Found {len(results[0].boxes)} detections")
-                    else:
-                        add_log("🔧 DEBUG: No results variable found")
+                    # Create red crosshair at AI calculated position (like before)
+                    center_x = frame_width // 2
+                    center_y = frame_height // 2
+                    target_x = center_x
+                    target_y = center_y
                     
-                    # Get current frame results and calculate AI crosshair
-                    if 'results' in locals() and results[0].boxes is not None:
-                        try:
-                            add_log("🔧 DEBUG: Calling get_ai_crosshair_position...")
+                    # Try to get AI position if target detected
+                    try:
+                        if 'results' in locals() and results[0].boxes is not None and len(results[0].boxes) > 0:
                             ai_crosshair_x, ai_crosshair_y, ai_debug = get_ai_crosshair_position(
                                 results[0], frame_width, frame_height, zoom_factor
                             )
-                            
-                            add_log(f"🔧 DEBUG: AI returned: ({ai_crosshair_x}, {ai_crosshair_y})")
-                            add_log(f"🔧 DEBUG: AI status: {ai_debug.get('status', 'unknown')}")
-                            
-                            # Show more debug info for calibration
-                            if 'estimated_distance_m' in ai_debug:
-                                add_log(f"🔧 DEBUG: Distance: {ai_debug['estimated_distance_m']:.1f}m")
-                            if 'correction_x' in ai_debug:
-                                add_log(f"🔧 DEBUG: X correction: {ai_debug['correction_x']:.1f}px")
-                            if 'correction_y' in ai_debug:
-                                add_log(f"🔧 DEBUG: Y correction: {ai_debug['correction_y']:.1f}px")
-                            
-                            # Apply manual calibration offsets to AI position
-                            global parallax_offset_x, parallax_offset_y
-                            calibrated_x = ai_crosshair_x + parallax_offset_x
-                            calibrated_y = ai_crosshair_y + parallax_offset_y
-                            
-                            # Keep within frame bounds
-                            calibrated_x = max(0, min(calibrated_x, frame_width))
-                            calibrated_y = max(0, min(calibrated_y, frame_height))
-                            
-                            # Activate red crosshair at calibrated position
-                            red_crosshair_active = True
-                            red_crosshair_x = calibrated_x
-                            red_crosshair_y = calibrated_y
-                            
-                            add_log(f"🔧 DEBUG: Applied offsets: X+{parallax_offset_x}, Y+{parallax_offset_y}")
-                            add_log(f"🔧 DEBUG: Final position: ({calibrated_x}, {calibrated_y})")
-                            
-                            add_log("🔴 RED CROSSHAIR ACTIVATED")
-                            add_log(f"   AI Position: ({ai_crosshair_x}, {ai_crosshair_y})")
-                            add_log(f"   Status: {ai_debug.get('status', 'calculated')}")
-                            add_log("   Use Arrow Keys to fine-tune position")
-                            
-                            if 'target_class' in ai_debug:
-                                add_log(f"   Target: {ai_debug['target_class']}")
-                            if 'confidence' in ai_debug:
-                                add_log(f"   Confidence: {ai_debug['confidence']:.2f}")
-                            
-                        except Exception as e:
-                            add_log(f"❌ AI calculation error: {str(e)[:30]}")
-                            import traceback
-                            add_log(f"❌ Full error: {traceback.format_exc()[:100]}")
-                    else:
-                        add_log("❌ No detections for AI crosshair")
-            
+                            # Use AI position if valid
+                            if ai_debug.get('status') == 'ai_corrected':
+                                target_x = ai_crosshair_x
+                                target_y = ai_crosshair_y
+                                add_log("🔴 LOCK ON: AI target detected")
+                            else:
+                                add_log("🔴 LOCK ON: Using center (no valid AI target)")
+                        else:
+                            add_log("🔴 LOCK ON: Using center (no detections)")
+                    except Exception as e:
+                        add_log(f"🔴 LOCK ON: Using center (AI error: {str(e)[:20]})")
+                    
+                    # Apply manual calibration offsets
+                    global parallax_offset_x, parallax_offset_y
+                    calibrated_x = target_x + parallax_offset_x
+                    calibrated_y = target_y + parallax_offset_y
+                    
+                    # Keep within frame bounds
+                    calibrated_x = max(0, min(calibrated_x, frame_width))
+                    calibrated_y = max(0, min(calibrated_y, frame_height))
+                    
+                    # Activate red crosshair at AI position
+                    red_crosshair_active = True
+                    red_crosshair_x = calibrated_x
+                    red_crosshair_y = calibrated_y
+                    
+                    # NOW move servos to put GREEN CENTER where TARGET OFFSET would be
+                    # Calculate where target offset crosshair would be
+                    fire_offset_x = calibrated_x - center_x
+                    fire_offset_y = calibrated_y - center_y
+                    target_offset_x = center_x - fire_offset_x
+                    target_offset_y = center_y - fire_offset_y
+                    
+                    # Calculate how far to move center to reach target offset position
+                    x_move_deviation = target_offset_x - center_x
+                    y_move_deviation = target_offset_y - center_y
+                    
+                    # Convert to servo steps with fine-tuning factor
+                    pixels_per_degree = frame_width / (config.CAMERA_FOV_HORIZONTAL / zoom_factor)
+                    
+                    # Add fine-tuning factor - adjust this if movement is too much/little
+                    movement_scale = 0.8  # Reduce movement by 20% to account for calculation errors
+                    
+                    # Additional offset compensation for "3 inches up and right" error
+                    # Convert 3 inches at typical distance to pixels (rough estimate)
+                    distance_compensation_x = -65  # Move servo LEFT to compensate for rightward error (fine-tuned)
+                    distance_compensation_y = 30   # Move servo DOWN to compensate for upward error (doubled)
+                    
+                    x_steps = (abs(x_move_deviation) / pixels_per_degree) * movement_scale
+                    y_steps = (abs(y_move_deviation) / pixels_per_degree) * movement_scale
+                    
+                    # Apply distance compensation
+                    x_compensation_steps = abs(distance_compensation_x) / pixels_per_degree
+                    y_compensation_steps = abs(distance_compensation_y) / pixels_per_degree
+                    
+                    # Move servos to put center at target offset position
+                    if x_steps > 1.0:  # Only move if significant deviation
+                        if x_move_deviation > 0:  # Need to move center right, move servo LEFT (inverted for TAB)
+                            direction = 'left'
+                        else:  # Need to move center left, move servo RIGHT (inverted for TAB)
+                            direction = 'right'
+                        
+                        step_size = min(x_steps + x_compensation_steps, 10.0)  # Add compensation
+                        servo_cmd = {'type': 'manual', 'direction': direction, 'step': step_size}
+                        try:
+                            servo_command_queue.put_nowait(servo_cmd)
+                            add_log(f"🎯 MOVING CENTER TO OFFSET X: {direction.upper()} {step_size:.1f}°")
+                        except queue.Full:
+                            add_log("❌ Servo queue full")
+                    
+                    if y_steps > 1.0:  # Only move if significant deviation  
+                        if y_move_deviation > 0:  # Need to move center down, move servo down
+                            direction = 'down'
+                        else:  # Need to move center up, move servo up
+                            direction = 'up'
+                        
+                        step_size = min(y_steps + y_compensation_steps, 10.0)  # Add compensation
+                        servo_cmd = {'type': 'manual', 'direction': direction, 'step': step_size}
+                        try:
+                            servo_command_queue.put_nowait(servo_cmd)
+                            add_log(f"🎯 MOVING CENTER TO OFFSET Y: {direction.upper()} {step_size:.1f}°")
+                        except queue.Full:
+                            add_log("❌ Servo queue full")
+                    
+                    add_log("🔴 RED FIRE CONTROL: AI calculated position")
+                    add_log("   Servos moving to center target, then use arrows to fine-tune")
+
             # AI tracking disabled - too unstable
             elif key == ord('t') or key == ord('T'):
                 add_log("❌ AI TRACKING DISABLED - Use manual control only")
