@@ -11,19 +11,24 @@ from typing import Optional, Tuple
 from config import config
 
 class ESP32DroneTracker:
-    def __init__(self, esp32_ip: str = None, timeout: float = None):
+    def __init__(self, esp32_ip: str = None, timeout: float = None,
+                 command_rate_limit: float = None):
         """
         Initialize ESP32 drone tracker connection
 
         Args:
             esp32_ip: IP address of ESP32 servo controller (defaults to config)
             timeout: HTTP request timeout in seconds (defaults to config)
+            command_rate_limit: Minimum seconds between servo commands
+                (defaults to config.COMMAND_RATE_LIMIT)
         """
         self.esp32_ip = esp32_ip or config.ESP32_IP
         self.base_url = f"http://{self.esp32_ip}"
         self.timeout = timeout or config.ESP32_TIMEOUT
         self.last_command_time = 0
-        self.command_rate_limit = 0.1   # 10 commands/sec for 4090 speed!
+        # Respect the configurable COMMAND_RATE_LIMIT (.env) instead of a
+        # hardcoded value; default is 0.1s == 10 commands/sec.
+        self.command_rate_limit = command_rate_limit or config.COMMAND_RATE_LIMIT
         self.tracking_active = False
         
         print(f"ESP32 Drone Tracker initialized: {self.base_url}")
