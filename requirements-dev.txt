@@ -1,0 +1,6 @@
+# Development / test-only dependencies (not needed at runtime).
+# Install with: pip install -r requirements-dev.txt
+pytest>=7.0
+# numpy is already pinned in requirements.txt and is imported by the modules
+# under test; listed here so the test suite can run in a minimal environment.
+numpy>=1.21.0,<3.0.0
