@@ -86,11 +86,19 @@ class AIParallaxCorrector:
         # Use larger dimension for more accurate distance estimation
         bbox_size_pixels = max(bbox_width, bbox_height)
         frame_size_pixels = max(frame_width, frame_height)
-        
+
+        # A degenerate (zero-area) or otherwise invalid bounding box produces a
+        # zero angular size, which makes the similar-triangles formula below
+        # divide by zero (math.tan(0) == 0) and would crash the whole detection
+        # loop. YOLO can emit such boxes, so fall back to the neutral 1 m base
+        # distance instead. (frame_size_pixels <= 0 would also divide by zero.)
+        if bbox_size_pixels <= 0 or frame_size_pixels <= 0:
+            return 1000.0  # neutral 1 m fallback (matches base_distance below)
+
         # Calculate angular size
         angular_size_degrees = (bbox_size_pixels / frame_size_pixels) * max(self.camera_fov_h, self.camera_fov_v)
         angular_size_radians = math.radians(angular_size_degrees)
-        
+
         # Distance estimation using similar triangles
         estimated_distance_mm = expected_size_mm / (2 * math.tan(angular_size_radians / 2))
         
