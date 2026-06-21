@@ -12,8 +12,11 @@ the module under test so the tests do not depend on ``python-dotenv`` or on
 whatever ``.env`` happens to be present in the environment — they pin the
 behavior of ``esp32_drone_integration`` itself, in isolation.
 
-No production code is modified; every assertion documents the module's current
-behavior, including a couple of quirks (see the ``step_size`` notes below).
+Every assertion documents the module's behavior. ``track_drone`` now sizes each
+axis's servo step to that axis's own angular error via the pure
+``plan_servo_moves`` helper (also tested directly below), fixing a prior bug
+where a shared ``min(|ax|, |ay|, 10)`` step zeroed-out the moving axis whenever
+the other axis was centered.
 """
 
 import sys
@@ -289,6 +292,38 @@ class TestMoveToPosition:
 
 
 # ---------------------------------------------------------------------------
+# plan_servo_moves — pure per-axis move planning (no network)
+# ---------------------------------------------------------------------------
+class TestPlanServoMoves:
+    def test_centered_within_threshold_returns_no_moves(self):
+        assert esp32.plan_servo_moves(3, -4) == []
+
+    def test_each_axis_sized_to_its_own_error(self):
+        # Both above threshold; pan capped at 10, tilt sized to its own 9deg.
+        assert esp32.plan_servo_moves(12, 9) == [("right", 10), ("down", 9)]
+
+    def test_pan_only_when_tilt_centered(self):
+        # The regression: a centered tilt must NOT shrink the pan step to 0,
+        # and must NOT emit a tilt command.
+        assert esp32.plan_servo_moves(12, 0) == [("right", 10)]
+
+    def test_tilt_only_when_pan_centered(self):
+        assert esp32.plan_servo_moves(0, 9) == [("down", 9)]
+
+    def test_negative_errors_pick_left_and_up(self):
+        assert esp32.plan_servo_moves(-8, -7) == [("left", 8), ("up", 7)]
+
+    def test_steps_capped_at_max_step(self):
+        assert esp32.plan_servo_moves(60, 45) == [("right", 10), ("down", 10)]
+
+    def test_custom_threshold_and_max_step_are_honored(self):
+        # threshold=20 suppresses the 12deg pan; max_step=5 caps the tilt.
+        assert esp32.plan_servo_moves(12, 30, move_threshold=20, max_step=5) == [
+            ("down", 5)
+        ]
+
+
+# ---------------------------------------------------------------------------
 # track_drone — pixel deviation -> servo move (the core logic)
 # ---------------------------------------------------------------------------
 class TestTrackDrone:
@@ -316,10 +351,11 @@ class TestTrackDrone:
     def test_moves_right_and_down_for_positive_deviation(self, patched):
         fake = patched["requests"]
         t = self._tracker_ready_to_move(patched)
-        # 200px -> 12deg x, 9deg y. step = min(12, 9, 10) = 9.
+        # 200px -> 12deg x, 9deg y. Each axis is now sized to its own error:
+        # pan step = min(12, 10) = 10, tilt step = min(9, 10) = 9.
         assert t.track_drone(200, 200, self.FW, self.FH) is True
         assert fake.urls == [
-            "http://10.0.0.70/right?step=9",
+            "http://10.0.0.70/right?step=10",
             "http://10.0.0.70/down?step=9",
         ]
         assert t.tracking_active is True
@@ -327,10 +363,10 @@ class TestTrackDrone:
     def test_moves_left_and_up_for_negative_deviation(self, patched):
         fake = patched["requests"]
         t = self._tracker_ready_to_move(patched)
-        # -200px -> -12deg x, -9deg y. step = min(12, 9, 10) = 9.
+        # -200px -> -12deg x, -9deg y. pan step = 10, tilt step = 9.
         assert t.track_drone(-200, -200, self.FW, self.FH) is True
         assert fake.urls == [
-            "http://10.0.0.70/left?step=9",
+            "http://10.0.0.70/left?step=10",
             "http://10.0.0.70/up?step=9",
         ]
 
@@ -344,26 +380,25 @@ class TestTrackDrone:
             "http://10.0.0.70/down?step=10",
         ]
 
-    def test_pan_only_when_tilt_below_threshold_uses_small_step(self, patched):
-        # Quirk pinned: step_size = min(|ax|, |ay|, 10) uses |ay| even when the
-        # tilt is below the move threshold. Here ax=12 (moves), ay=0, so the
-        # pan command goes out with step=0 and no tilt command is sent.
+    def test_pan_only_error_sends_one_proportional_pan_command(self, patched):
+        # Regression: a purely-horizontal error (ax=12, ay=0) now sends a single
+        # pan command sized to the *pan* error (step=10) — previously the shared
+        # step_size = min(|ax|, |ay|, 10) collapsed to 0 because |ay|==0, so the
+        # axis that actually needed to move was told to move 0 degrees.
         fake = patched["requests"]
         t = self._tracker_ready_to_move(patched)
         assert t.track_drone(200, 0, self.FW, self.FH) is True
-        assert fake.urls == ["http://10.0.0.70/right?step=0"]
+        assert fake.urls == ["http://10.0.0.70/right?step=10"]
+        assert t.tracking_active is True
 
-    def test_tilt_only_path_still_sends_a_pan_command(self, patched):
-        # Quirk pinned: entering the movement branch via tilt alone (ax=0, ay=9)
-        # still emits a pan command first (direction defaults to "left" since
-        # 0 > 0 is False), then the tilt command, both with step=0.
+    def test_tilt_only_error_sends_no_spurious_pan_command(self, patched):
+        # Regression: a purely-vertical error (ax=0, ay=9) now sends only the
+        # tilt command — previously a bogus pan command (defaulting to "left",
+        # step=0) was emitted first.
         fake = patched["requests"]
         t = self._tracker_ready_to_move(patched)
         assert t.track_drone(0, 200, self.FW, self.FH) is True
-        assert fake.urls == [
-            "http://10.0.0.70/left?step=0",
-            "http://10.0.0.70/down?step=0",
-        ]
+        assert fake.urls == ["http://10.0.0.70/down?step=9"]
 
     def test_rate_limited_call_returns_false_without_request(self, patched):
         fake = patched["requests"]
@@ -378,7 +413,7 @@ class TestTrackDrone:
         t = self._tracker_ready_to_move(patched)
         assert t.track_drone(200, 200, self.FW, self.FH) is False
         # Only the pan request was attempted; tilt is gated behind a 200.
-        assert fake.urls == ["http://10.0.0.70/right?step=9"]
+        assert fake.urls == ["http://10.0.0.70/right?step=10"]
 
     def test_exception_returns_false(self, patched):
         patched["install"](raise_exc=ConnectionError("x"))
