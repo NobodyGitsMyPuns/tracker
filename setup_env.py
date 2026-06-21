@@ -7,10 +7,10 @@ Creates .env file with current hardcoded values
 import os
 
 def setup_env_file():
- """Create .env file with extracted values from old hardcoded settings"""
+    """Create .env file with extracted values from old hardcoded settings"""
 
- # Values extracted from the old hardcoded settings
- env_content = """# Drone Tracker Configuration
+    # Values extracted from the old hardcoded settings
+    env_content = """# Drone Tracker Configuration
 # Generated from setup_env.py - edit as needed
 
 # =============================================================================
@@ -59,18 +59,18 @@ MANUAL_STEP_SIZE=5
 MANUAL_STEP_SIZE_SHIFT=15
 """
 
- if os.path.exists('.env'):
- response = input("WARNING: .env file already exists. Overwrite? (y/N): ")
- if response.lower() != 'y':
- print("ERROR: Cancelled - .env file not modified")
- return
+    if os.path.exists('.env'):
+        response = input("WARNING: .env file already exists. Overwrite? (y/N): ")
+        if response.lower() != 'y':
+            print("ERROR: Cancelled - .env file not modified")
+            return
 
- with open('.env', 'w') as f:
- f.write(env_content)
+    with open('.env', 'w') as f:
+        f.write(env_content)
 
- print("SUCCESS: Created .env file with current settings")
- print(" Please review and update WiFi credentials in .env file")
- print(" .env file is excluded from git for security")
+    print("SUCCESS: Created .env file with current settings")
+    print(" Please review and update WiFi credentials in .env file")
+    print(" .env file is excluded from git for security")
 
 if __name__ == "__main__":
- setup_env_file()
+    setup_env_file()
