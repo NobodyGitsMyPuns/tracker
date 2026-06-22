@@ -4,3 +4,9 @@ pytest>=7.0
 # numpy is already pinned in requirements.txt and is imported by the modules
 # under test; listed here so the test suite can run in a minimal environment.
 numpy>=1.21.0,<3.0.0
+# python-dotenv is imported at module load by config.py (`from dotenv import
+# load_dotenv`); without it tests/test_config.py fails to import.
+python-dotenv>=1.0.0
+# requests is imported at module load by esp32_drone_integration.py; without it
+# tests/test_esp32_drone_integration.py fails at collection.
+requests>=2.28.0
