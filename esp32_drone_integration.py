@@ -7,8 +7,38 @@ Connects YOLO camera detection to ESP32 servo tracking
 import requests
 import time
 import json
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from config import config
+
+
+def plan_servo_moves(angle_x: float, angle_y: float,
+                     move_threshold: float = 5,
+                     max_step: int = 10) -> List[Tuple[str, int]]:
+    """Translate per-axis angular error into the servo step commands to send.
+
+    Each axis is corrected **independently** and proportionally to its *own*
+    angular error (in degrees), capped at ``max_step`` degrees:
+
+    - pan moves ``right`` when ``angle_x > 0`` else ``left``;
+    - tilt moves ``down`` when ``angle_y > 0`` else ``up``.
+
+    An axis only contributes a command when its error exceeds ``move_threshold``,
+    so a purely-horizontal error no longer drags a (bogus) tilt command along,
+    and vice-versa. Returns a list of ``(direction, step)`` tuples in pan-then-
+    tilt order; the list is empty when the target is within ``move_threshold``
+    on both axes.
+    """
+    moves: List[Tuple[str, int]] = []
+    if abs(angle_x) > move_threshold:
+        step = int(min(abs(angle_x), max_step))
+        if step > 0:
+            moves.append(("right" if angle_x > 0 else "left", step))
+    if abs(angle_y) > move_threshold:
+        step = int(min(abs(angle_y), max_step))
+        if step > 0:
+            moves.append(("down" if angle_y > 0 else "up", step))
+    return moves
+
 
 class ESP32DroneTracker:
     def __init__(self, esp32_ip: str = None, timeout: float = None,
@@ -107,46 +137,34 @@ class ESP32DroneTracker:
             # Convert pixel deviation to angle
             angle_per_pixel_x = camera_fov_horizontal / frame_width
             angle_per_pixel_y = camera_fov_vertical / frame_height
-            
+
             angle_x = x_deviation * angle_per_pixel_x
             angle_y = y_deviation * angle_per_pixel_y
-            
-            # Determine movement direction and magnitude
-            move_threshold = 5  # degrees
-            
-            if abs(angle_x) > move_threshold or abs(angle_y) > move_threshold:
-                # Rate limiting
-                current_time = time.time()
-                if current_time - self.last_command_time < self.command_rate_limit:
-                    return False
-                
-                # Calculate movement steps (smaller for precision)
-                step_size = min(abs(angle_x), abs(angle_y), 10)  # Max 10 degree steps
-                
-                pan_direction = "right" if angle_x > 0 else "left"
-                tilt_direction = "down" if angle_y > 0 else "up"
-                
-                # Send movement command
-                url = f"{self.base_url}/{pan_direction}?step={int(step_size)}"
-                response = requests.get(url, timeout=self.timeout)
-                
-                if response.status_code == 200:
-                    # Also send tilt command if needed
-                    if abs(angle_y) > move_threshold:
-                        url = f"{self.base_url}/{tilt_direction}?step={int(step_size)}"
-                        requests.get(url, timeout=self.timeout)
-                    
-                    self.last_command_time = time.time()
-                    self.tracking_active = True
-                    print(f"SUCCESS: Tracking - moved {pan_direction} {step_size}°, {tilt_direction} {step_size}°")
-                    return True
-                else:
-                    print(f"ERROR: Tracking failed - HTTP {response.status_code}")
-                    return False
-            else:
+
+            # Plan per-axis corrections (each axis sized to its own error).
+            moves = plan_servo_moves(angle_x, angle_y, move_threshold=5, max_step=10)
+            if not moves:
                 # Target is centered, no movement needed
                 return True
-                
+
+            # Rate limiting
+            current_time = time.time()
+            if current_time - self.last_command_time < self.command_rate_limit:
+                return False
+
+            for direction, step in moves:
+                url = f"{self.base_url}/{direction}?step={step}"
+                response = requests.get(url, timeout=self.timeout)
+                if response.status_code != 200:
+                    print(f"ERROR: Tracking failed - HTTP {response.status_code}")
+                    return False
+
+            self.last_command_time = time.time()
+            self.tracking_active = True
+            moved = ", ".join(f"{direction} {step}°" for direction, step in moves)
+            print(f"SUCCESS: Tracking - moved {moved}")
+            return True
+
         except Exception as e:
             print(f"ERROR: Tracking failed - {str(e)}")
             return False
