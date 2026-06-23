@@ -138,6 +138,29 @@ class TestEstimateDistance:
         got = corrector.estimate_distance(bbox, 10, "clock", 0.9, FW, FH)
         assert got == pytest.approx(expected, rel=1e-9)
 
+    # --- Degenerate (zero-area) bounding box -------------------------------
+    # A zero-width *and* zero-height box gives a zero angular size, which used to
+    # make the similar-triangles divisor 0 and raise ZeroDivisionError. The limit
+    # of that geometry is "infinitely far away", so it must instead resolve to the
+    # 10 m range ceiling without raising.
+    def test_zero_area_bbox_does_not_raise(self, corrector):
+        # Would previously raise ZeroDivisionError.
+        d = corrector.estimate_distance(0, 0, "clock", 0.9, FW, FH)
+        assert d == 10000
+
+    def test_zero_area_bbox_clamps_to_max_regardless_of_confidence(self, corrector):
+        # Infinity dominates the confidence/fallback blend, so every tier clamps
+        # to the same 10 m ceiling.
+        for conf in (0.2, 0.5, 0.9):
+            assert corrector.estimate_distance(0, 0, "drone", conf, FW, FH) == 10000
+
+    def test_single_zero_dimension_is_still_finite(self, corrector):
+        # Only a *fully* degenerate box is special-cased; one nonzero dimension is
+        # enough for a normal finite estimate (the estimator keys off max(w, h)).
+        d = corrector.estimate_distance(0, 50, "clock", 0.9, FW, FH)
+        assert math.isfinite(d)
+        assert 100 < d < 10000
+
 
 # ---------------------------------------------------------------------------
 # calculate_parallax_correction
@@ -247,3 +270,14 @@ class TestAdaptiveCrosshair:
         ox, oy = info["original_position"]
         sx, sy = info["smoothed_position"]
         assert info["correction_offset"] == (sx - ox, sy - oy)
+
+    def test_degenerate_bbox_detection_does_not_crash(self, corrector):
+        # A real, in-filter detection (clock) with a zero-area box must not crash
+        # the whole crosshair computation; it resolves to the 10 m distance and
+        # returns finite, in-frame integer coordinates.
+        det = [{"bbox": [500, 300, 500, 300], "class": "clock", "confidence": 0.9}]
+        x, y, info = corrector.get_adaptive_crosshair(det, FW, FH, 1.0)
+        assert info["status"] == "ai_corrected"
+        assert info["estimated_distance_mm"] == 10000
+        assert isinstance(x, int) and isinstance(y, int)
+        assert 0 <= x <= FW - 1 and 0 <= y <= FH - 1

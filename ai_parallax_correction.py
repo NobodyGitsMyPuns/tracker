@@ -90,9 +90,17 @@ class AIParallaxCorrector:
         # Calculate angular size
         angular_size_degrees = (bbox_size_pixels / frame_size_pixels) * max(self.camera_fov_h, self.camera_fov_v)
         angular_size_radians = math.radians(angular_size_degrees)
-        
-        # Distance estimation using similar triangles
-        estimated_distance_mm = expected_size_mm / (2 * math.tan(angular_size_radians / 2))
+
+        # Distance estimation using similar triangles.
+        # A degenerate (zero-area) bounding box yields a zero angular size, which
+        # would make the divisor 0. Mathematically that is the limit "infinitely
+        # far away", so treat it as infinity and let the range clamp below pin it
+        # to the 10 m maximum instead of raising ZeroDivisionError.
+        divisor = 2 * math.tan(angular_size_radians / 2)
+        if divisor > 0:
+            estimated_distance_mm = expected_size_mm / divisor
+        else:
+            estimated_distance_mm = float('inf')
         
         # Apply confidence weighting
         if confidence > 0.8:
