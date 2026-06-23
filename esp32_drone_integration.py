@@ -11,6 +11,28 @@ from typing import List, Optional, Tuple
 from config import config
 
 
+# Servo travel limits enforced by the ESP32 firmware (ESP32_OTA_Servo.ino):
+# pan is constrained to 0-180 and tilt to 20-160. Mirror them on the client so
+# an out-of-range command is never sent over the wire and the servos are never
+# driven against their mechanical stops (the firmware would clamp to exactly
+# these values anyway, so the physical result is unchanged).
+PAN_ANGLE_MIN, PAN_ANGLE_MAX = 0, 180
+TILT_ANGLE_MIN, TILT_ANGLE_MAX = 20, 160
+
+
+def clamp_servo_angles(pan_angle: int, tilt_angle: int) -> Tuple[int, int]:
+    """Clamp a requested (pan, tilt) to the servos' safe travel.
+
+    Pan is clamped to ``[PAN_ANGLE_MIN, PAN_ANGLE_MAX]`` and tilt to
+    ``[TILT_ANGLE_MIN, TILT_ANGLE_MAX]`` — the same ranges the firmware enforces
+    — so a caller that computes an out-of-range angle can't push the hardware
+    past its limits. In-range values pass through unchanged.
+    """
+    safe_pan = max(PAN_ANGLE_MIN, min(PAN_ANGLE_MAX, pan_angle))
+    safe_tilt = max(TILT_ANGLE_MIN, min(TILT_ANGLE_MAX, tilt_angle))
+    return safe_pan, safe_tilt
+
+
 def plan_servo_moves(angle_x: float, angle_y: float,
                      move_threshold: float = 5,
                      max_step: int = 10) -> List[Tuple[str, int]]:
@@ -60,9 +82,9 @@ class ESP32DroneTracker:
         # hardcoded value; default is 0.1s == 10 commands/sec.
         self.command_rate_limit = command_rate_limit or config.COMMAND_RATE_LIMIT
         self.tracking_active = False
-        
+
         print(f"ESP32 Drone Tracker initialized: {self.base_url}")
-    
+
     def start_sweep_mode(self) -> bool:
         """Start automatic sweep mode"""
         try:
@@ -76,7 +98,7 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Sweep mode failed - {str(e)}")
             return False
-    
+
     def stop_sweep_mode(self) -> bool:
         """Stop sweep mode"""
         try:
@@ -90,27 +112,40 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Stop sweep failed - {str(e)}")
             return False
-    
+
     def move_to_position(self, pan_angle: int, tilt_angle: int) -> bool:
         """
         Move servos to specific position
-        
+
+        The requested angles are clamped to the servos' safe travel before the
+        command is sent — pan to 0-180 and tilt to 20-160 degrees — matching the
+        limits the ESP32 firmware enforces. An out-of-range request is clamped
+        (and logged) instead of being driven against the mechanical stops.
+
         Args:
-            pan_angle: Pan angle (0-180 degrees)
-            tilt_angle: Tilt angle (0-180 degrees)
+            pan_angle: Pan angle in degrees (clamped to 0-180)
+            tilt_angle: Tilt angle in degrees (clamped to 20-160)
         """
         try:
+            safe_pan, safe_tilt = clamp_servo_angles(pan_angle, tilt_angle)
+            if (safe_pan, safe_tilt) != (pan_angle, tilt_angle):
+                print(
+                    f"WARNING: Requested position pan={pan_angle}, "
+                    f"tilt={tilt_angle} out of range; clamped to "
+                    f"pan={safe_pan}, tilt={safe_tilt}"
+                )
+
             # Rate limiting to prevent servo overload
             current_time = time.time()
             if current_time - self.last_command_time < self.command_rate_limit:
                 time.sleep(self.command_rate_limit - (current_time - self.last_command_time))
-            
-            url = f"{self.base_url}/move?pan={pan_angle}&tilt={tilt_angle}"
+
+            url = f"{self.base_url}/move?pan={safe_pan}&tilt={safe_tilt}"
             response = requests.get(url, timeout=self.timeout)
             self.last_command_time = time.time()
-            
+
             if response.status_code == 200:
-                print(f"SUCCESS: Moved to pan={pan_angle}, tilt={tilt_angle}")
+                print(f"SUCCESS: Moved to pan={safe_pan}, tilt={safe_tilt}")
                 return True
             else:
                 print(f"ERROR: Move failed - HTTP {response.status_code}")
@@ -118,13 +153,13 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Move failed - {str(e)}")
             return False
-    
-    def track_drone(self, x_deviation: float, y_deviation: float, 
+
+    def track_drone(self, x_deviation: float, y_deviation: float,
                    frame_width: int, frame_height: int,
                    camera_fov_horizontal: float = 60, camera_fov_vertical: float = 45) -> bool:
         """
         Track detected drone by moving servos
-        
+
         Args:
             x_deviation: Horizontal pixel deviation from center
             y_deviation: Vertical pixel deviation from center
@@ -168,7 +203,7 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Tracking failed - {str(e)}")
             return False
-    
+
     def center_servos(self) -> bool:
         """Center both servos to home position"""
         try:
@@ -183,7 +218,7 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Center failed - {str(e)}")
             return False
-    
+
     def fire_blaster(self, duration_ms: int = 150) -> bool:
         """Fire the blaster for specified duration"""
         try:
@@ -198,7 +233,7 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Fire failed - {str(e)}")
             return False
-    
+
     def stop_movement(self) -> bool:
         """Stop all servo movement"""
         try:
@@ -213,7 +248,7 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: Stop failed - {str(e)}")
             return False
-    
+
     def test_connection(self) -> bool:
         """Test connection to ESP32"""
         try:
@@ -227,7 +262,7 @@ class ESP32DroneTracker:
         except Exception as e:
             print(f"ERROR: ESP32 connection test failed - {str(e)}")
             return False
-    
+
     def get_status(self) -> Optional[dict]:
         """Get current servo positions and status"""
         try:
@@ -244,18 +279,18 @@ class ESP32DroneTracker:
 if __name__ == "__main__":
     # Test the ESP32 connection
     tracker = ESP32DroneTracker()
-    
+
     print("Testing ESP32 connection...")
     if tracker.test_connection():
         print("SUCCESS: ESP32 is responding")
-        
+
         print("Testing servo centering...")
         tracker.center_servos()
-        
+
         print("Testing movement...")
         tracker.move_to_position(120, 60)
         time.sleep(1)
         tracker.center_servos()
-        
+
     else:
         print("ERROR: ESP32 not responding - check network connection")
