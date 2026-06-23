@@ -132,11 +132,58 @@ def test_default_wifi_placeholders_flow_through(tmp_path, monkeypatch):
 
 
 def test_ssid_with_spaces_embedded_verbatim(tmp_path, monkeypatch):
-    # Current behavior: the SSID is interpolated raw, no escaping. A space is
-    # legal inside a C string literal, so this documents (not endorses) that
-    # the generator performs no sanitisation.
+    # A space is legal inside a C string literal and needs no escaping, so it is
+    # interpolated verbatim. This pins that ordinary characters pass through.
     content = _render(tmp_path, monkeypatch, WIFI_SSID="Guest Network 5G")
     assert 'const char* WIFI_SSID = "Guest Network 5G";' in content
+
+
+# ---------------------------------------------------------------------------
+# WiFi credentials are escaped so the emitted C string literal stays well-formed
+# ---------------------------------------------------------------------------
+def test_password_with_double_quote_is_escaped(tmp_path, monkeypatch):
+    # A literal " in a WPA2 passphrase would otherwise terminate the C string
+    # early: const char* WIFI_PASSWORD = "pa"ss"; -> a C++ syntax error that
+    # breaks the firmware build. It must be emitted as \".
+    content = _render(tmp_path, monkeypatch, WIFI_PASSWORD='pa"ss')
+    assert 'const char* WIFI_PASSWORD = "pa\\"ss";' in content
+    # The raw, unescaped form must not appear.
+    assert 'const char* WIFI_PASSWORD = "pa"ss";' not in content
+
+
+def test_password_with_trailing_backslash_is_escaped(tmp_path, monkeypatch):
+    # A trailing backslash would escape the closing quote ("pass\") and swallow
+    # the following characters. It must be emitted as a doubled backslash.
+    content = _render(tmp_path, monkeypatch, WIFI_PASSWORD="pass\\")
+    assert 'const char* WIFI_PASSWORD = "pass\\\\";' in content
+
+
+def test_ssid_with_backslash_and_quote_is_escaped(tmp_path, monkeypatch):
+    # Both special characters together: backslash is doubled and the quote is
+    # escaped, in that order, so no spurious escape sequence is produced.
+    content = _render(tmp_path, monkeypatch, WIFI_SSID='a\\b"c')
+    assert 'const char* WIFI_SSID = "a\\\\b\\"c";' in content
+
+
+def test_credential_newline_is_escaped(tmp_path, monkeypatch):
+    # A stray newline (e.g. from a copy-paste) would split the literal across
+    # two source lines; it must become the \n escape sequence instead.
+    content = _render(tmp_path, monkeypatch, WIFI_SSID="line1\nline2")
+    assert 'const char* WIFI_SSID = "line1\\nline2";' in content
+    # The credential line stays on a single physical line.
+    ssid_line = next(
+        line for line in content.splitlines() if "WIFI_SSID" in line
+    )
+    assert ssid_line.count('"') == 2
+
+
+def test_escape_c_string_helper_leaves_plain_text_untouched(tmp_path, monkeypatch):
+    # The escaper must be a no-op for ordinary credentials (incl. spaces) so the
+    # common case renders byte-identically to before.
+    module = _load_generator()
+    assert module.escape_c_string("Guest Network 5G") == "Guest Network 5G"
+    assert module.escape_c_string("hunter2") == "hunter2"
+    assert module.escape_c_string('a"b\\c') == 'a\\"b\\\\c'
 
 
 # ---------------------------------------------------------------------------
