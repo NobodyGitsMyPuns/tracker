@@ -290,6 +290,63 @@ class TestMoveToPosition:
         assert t.move_to_position(90, 90) is True
         assert clock.sleeps == []
 
+    def test_out_of_range_pan_is_clamped_in_url(self, patched):
+        # Pan above 180 and below 0 must be clamped to the firmware-safe bounds
+        # before the command is sent (the firmware would clamp identically).
+        fake = patched["install"](FakeResponse(200))
+        t = make_tracker()
+        assert t.move_to_position(999, 90) is True
+        assert fake.urls == ["http://10.0.0.70/move?pan=180&tilt=90"]
+        fake = patched["install"](FakeResponse(200))
+        assert make_tracker().move_to_position(-30, 90) is True
+        assert fake.urls == ["http://10.0.0.70/move?pan=0&tilt=90"]
+
+    def test_out_of_range_tilt_is_clamped_to_firmware_band(self, patched):
+        # Tilt is 20-160 on the hardware (NOT 0-180): a request for 0 or 200
+        # must be pulled into that band, not sent raw.
+        fake = patched["install"](FakeResponse(200))
+        t = make_tracker()
+        assert t.move_to_position(90, 0) is True
+        assert fake.urls == ["http://10.0.0.70/move?pan=90&tilt=20"]
+        fake = patched["install"](FakeResponse(200))
+        assert make_tracker().move_to_position(90, 200) is True
+        assert fake.urls == ["http://10.0.0.70/move?pan=90&tilt=160"]
+
+    def test_in_range_values_pass_through_unchanged(self, patched):
+        # The values the system actually produces today are unchanged: clamping
+        # is a no-op inside the safe band, so behavior is byte-for-byte identical.
+        fake = patched["install"](FakeResponse(200))
+        assert make_tracker().move_to_position(120, 60) is True
+        assert fake.urls == ["http://10.0.0.70/move?pan=120&tilt=60"]
+
+
+# ---------------------------------------------------------------------------
+# clamp_servo_angles — pure servo-travel clamp (no network)
+# ---------------------------------------------------------------------------
+class TestClampServoAngles:
+    def test_in_range_pair_unchanged(self):
+        assert esp32.clamp_servo_angles(120, 60) == (120, 60)
+
+    def test_pan_clamped_to_zero_one_eighty(self):
+        assert esp32.clamp_servo_angles(-5, 90) == (0, 90)
+        assert esp32.clamp_servo_angles(181, 90) == (180, 90)
+
+    def test_tilt_clamped_to_twenty_one_sixty(self):
+        assert esp32.clamp_servo_angles(90, 19) == (90, 20)
+        assert esp32.clamp_servo_angles(90, 161) == (90, 160)
+
+    def test_boundaries_are_inclusive(self):
+        assert esp32.clamp_servo_angles(0, 20) == (0, 20)
+        assert esp32.clamp_servo_angles(180, 160) == (180, 160)
+
+    def test_both_axes_clamped_together(self):
+        assert esp32.clamp_servo_angles(500, -500) == (180, 20)
+
+    def test_constants_match_firmware_ranges(self):
+        # Guard the documented contract against accidental drift.
+        assert (esp32.PAN_ANGLE_MIN, esp32.PAN_ANGLE_MAX) == (0, 180)
+        assert (esp32.TILT_ANGLE_MIN, esp32.TILT_ANGLE_MAX) == (20, 160)
+
 
 # ---------------------------------------------------------------------------
 # plan_servo_moves — pure per-axis move planning (no network)
