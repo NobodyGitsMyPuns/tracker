@@ -356,7 +356,16 @@ def apply_digital_zoom(frame, zoom_factor, center_x=0.5, center_y=0.5):
     # Calculate crop dimensions
     crop_width = int(width / zoom_factor)
     crop_height = int(height / zoom_factor)
-    
+
+    # Keep at least a 1px crop. An extreme zoom (>= the frame dimension, which
+    # is reachable when MAX_ZOOM_FACTOR is configured large in .env) truncates
+    # int(dim / zoom_factor) to 0, producing an empty slice that makes
+    # cv2.resize raise and takes down the GUI/display thread. Flooring to 1
+    # keeps a valid (maximally zoomed-in) frame instead of crashing; every
+    # normal zoom (crop already >= 1) is unaffected.
+    crop_width = max(1, crop_width)
+    crop_height = max(1, crop_height)
+
     # Calculate crop position (center_x and center_y are 0-1 range)
     crop_x = int((width - crop_width) * center_x)
     crop_y = int((height - crop_height) * center_y)

@@ -182,6 +182,30 @@ class TestApplyDigitalZoom:
         assert result.shape == (40, 50, 3)
         assert np.all(result[:, :, 1] == 7)
 
+    def test_extreme_zoom_keeps_a_nonempty_crop(self):
+        # A zoom factor >= the frame dimension truncates int(dim / zoom) to 0.
+        # Without a floor the crop is an empty slice, and the real cv2.resize
+        # raises on an empty src — killing the display thread. The crop must
+        # stay at least 1px so a degenerate zoom degrades gracefully instead of
+        # crashing. (Reachable when MAX_ZOOM_FACTOR is configured large.)
+        frame = _coord_frame(80, 100)
+        result = yolo.apply_digital_zoom(frame, 200.0, center_x=0.5, center_y=0.5)
+
+        assert result.size > 0
+        assert result.shape[0] >= 1 and result.shape[1] >= 1
+        # cv2.resize is still asked to rescale the (1px) crop back to the frame.
+        assert len(_CV2.resize_calls) == 1
+        assert _CV2.resize_calls[0]["dsize"] == (100, 80)  # (width, height)
+
+    def test_zoom_exactly_at_frame_width_yields_a_single_pixel_crop(self):
+        # The boundary case: zoom == width gives int(100/100) == 1, so the floor
+        # is a no-op here and the crop is exactly the 1px the math produces.
+        frame = _coord_frame(80, 100)
+        result = yolo.apply_digital_zoom(frame, 100.0, center_x=0.0, center_y=0.0)
+        # crop_w = max(1, int(100/100)) = 1; crop_h = max(1, int(80/100)=0) = 1.
+        assert result.shape == (1, 1)
+        assert result[0, 0] == 0  # top-left pixel, origin pinned at (0, 0)
+
 
 # ===========================================================================
 # create_info_panel
