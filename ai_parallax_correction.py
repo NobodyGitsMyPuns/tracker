@@ -135,10 +135,19 @@ class AIParallaxCorrector:
         Returns:
             Tuple of (corrected_x, corrected_y) in pixels
         """
+        # A zoom factor of zero (or negative) is invalid: the effective-FOV
+        # divisions below would raise ZeroDivisionError (zoom == 0) or invert the
+        # geometry (zoom < 0), crashing the AI tracking thread that calls this.
+        # That input is reachable in practice — e.g. a DEFAULT_ZOOM_FACTOR of 0 in
+        # the .env, or a caller passing 0 — so fall back to 1.0 (no magnification),
+        # the same "no zoom" baseline apply_digital_zoom uses for zoom <= 1.0.
+        if zoom_factor <= 0:
+            zoom_factor = 1.0
+
         # Convert pixel positions to angles from center
         center_x = frame_width / 2
         center_y = frame_height / 2
-        
+
         # Account for zoom factor in angle calculations
         effective_fov_h = self.camera_fov_h / zoom_factor
         effective_fov_v = self.camera_fov_v / zoom_factor

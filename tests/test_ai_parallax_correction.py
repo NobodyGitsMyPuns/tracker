@@ -195,6 +195,27 @@ class TestParallaxCorrection:
         b = corrector.calculate_parallax_correction(1500, 1000, 600, FW, FH, 1.0)
         assert a == b
 
+    def test_zero_zoom_does_not_raise_and_falls_back_to_no_zoom(self, corrector):
+        # zoom_factor == 0 would divide by zero in the effective-FOV calc; the
+        # guard treats it as 1.0 (no magnification) instead of crashing.
+        no_zoom = corrector.calculate_parallax_correction(2000, 1200, 540, FW, FH, 1.0)
+        zero_zoom = corrector.calculate_parallax_correction(2000, 1200, 540, FW, FH, 0)
+        assert zero_zoom == no_zoom
+
+    def test_negative_zoom_falls_back_to_no_zoom(self, corrector):
+        # A negative zoom would invert the FOV geometry; it is likewise clamped
+        # to the 1.0 no-zoom baseline.
+        no_zoom = corrector.calculate_parallax_correction(2000, 1200, 540, FW, FH, 1.0)
+        neg_zoom = corrector.calculate_parallax_correction(2000, 1200, 540, FW, FH, -2.5)
+        assert neg_zoom == no_zoom
+
+    def test_zero_zoom_default_argument_path(self, corrector):
+        # The same guard protects the keyword/default call path used by callers.
+        x, y = corrector.calculate_parallax_correction(
+            1000, 960, 540, FW, FH, zoom_factor=0
+        )
+        assert 0 <= x <= FW - 1 and 0 <= y <= FH - 1
+
 
 # ---------------------------------------------------------------------------
 # get_adaptive_crosshair
