@@ -443,3 +443,40 @@ class TestGetStatus:
     def test_returns_none_on_exception(self, patched):
         patched["install"](raise_exc=ConnectionError("x"))
         assert make_tracker().get_status() is None
+
+
+# ---------------------------------------------------------------------------
+# Failure-mode matrix completion
+# ---------------------------------------------------------------------------
+# Every ESP32DroneTracker endpoint is meant to degrade the same way: a non-200
+# reply and a thrown request both yield a falsy result and never propagate an
+# exception to the caller. Most arms of that matrix are pinned above, but three
+# were unreached -- and two of them guard a real safety contract: when a *stop*
+# or *center* command fails (the firmware rejects it, or the network is down),
+# the tracker must NOT clear ``tracking_active``. Otherwise the controller would
+# believe motion had halted while the hardware never confirmed it. These tests
+# close those arms and assert that invariant explicitly.
+class TestFailureModeMatrix:
+    def test_stop_sweep_mode_exception_returns_false(self, patched):
+        # stop_sweep_mode had ok/non-200 coverage but no thrown-request arm.
+        patched["install"](raise_exc=ConnectionError("link down"))
+        # The except branch must swallow the error and report failure, not raise.
+        assert make_tracker().stop_sweep_mode() is False
+
+    def test_center_servos_exception_keeps_tracking(self, patched):
+        # center_servos had ok/non-200 coverage but no thrown-request arm.
+        patched["install"](raise_exc=TimeoutError("no ack"))
+        t = make_tracker()
+        t.tracking_active = True
+        assert t.center_servos() is False
+        # Safety: an unconfirmed center must not flip the tracking flag off.
+        assert t.tracking_active is True
+
+    def test_stop_movement_non_200_keeps_tracking(self, patched):
+        # stop_movement had ok/exception coverage but no non-200 arm.
+        patched["install"](FakeResponse(503))
+        t = make_tracker()
+        t.tracking_active = True
+        assert t.stop_movement() is False
+        # Safety: a rejected stop (HTTP 503) must not flip the tracking flag off.
+        assert t.tracking_active is True
